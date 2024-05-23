@@ -1,24 +1,100 @@
-import os, sys
+import os
 import threading
 import time
 from PIL import Image, ImageTk
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
+import pyautogui
 
-from aux_func import *
+# ADDING STOP BUTTON
+# SCREENSHOTTING: either with a button to trigger screenshotting or automatically screenshotting every x seconds
+# ADDING LLM with vision gpt4o to write a criticism of the current state of work (based on screenshot)
+# TTS to read out the criticism
+
+class Bin:
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+        self.remaining_width = width
+        self.remaining_height = height
+        self.current_x = 0
+        self.current_y = 0
+        self.max_row_height = 0
+        self.images = []
+
+    def can_place_image(self, img_width, img_height):
+        if img_width > self.remaining_width:
+            if img_height + self.max_row_height > self.height:
+                return False
+            self.current_x = 0
+            self.current_y += self.max_row_height
+            self.remaining_width = self.width
+            self.max_row_height = 0
+        return img_width <= self.remaining_width and self.current_y + img_height <= self.height
+
+    def place_image(self, img, position):
+        self.images.append((img, position))
+        self.remaining_width -= img.width
+        self.current_x += img.width
+        if img.height > self.max_row_height:
+            self.max_row_height = img.height
+
+    def is_empty(self):
+        return len(self.images) == 0
+
+def load_images(image_paths):
+    images = []
+    for path in image_paths:
+        img = Image.open(path)
+        images.append(img)
+    return images
+
+def bin_packing(images, bin_width, bin_height):
+    bins = []
+
+    for img in images:
+        placed = False
+        for bin in bins:
+            if bin.can_place_image(img.width, img.height):
+                bin.place_image(img, (bin.current_x, bin.current_y))
+                placed = True
+                break
+        if not placed:
+            new_bin = Bin(bin_width, bin_height)
+            new_bin.place_image(img, (0, 0))
+            bins.append(new_bin)
+
+    return bins
+
+def create_packed_image(bins):
+    packed_images = []
+    for bin in bins:
+        if not bin.is_empty():
+            max_width = max(img.width + pos[0] for img, pos in bin.images)
+            max_height = max(img.height + pos[1] for img, pos in bin.images)
+            packed_image = Image.new('RGBA', (max_width, max_height), (255, 255, 255, 0))
+            for img, position in bin.images:
+                packed_image.paste(img, position)
+            packed_images.append(packed_image)
+    return packed_images
+
+def load_image(inputs: dict) -> dict:
+    """Load image from file and encode it as base64."""
+    image_path = inputs["image_path"]
+  
+    def encode_image(image_path):
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
+    image_base64 = encode_image(image_path)
+    return {"image": image_base64}
 
 class ImageCyclerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
         self.title("Image Cycler")
-        self.geometry("1174x768")  # Increased width by 150 pixels#
-        
-        if hasattr(sys, '_MEIPASS'):
-            icon_path = os.path.join(sys._MEIPASS, 'app_icon.ico')
-        else:
-            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app_icon.ico')
-
+        self.geometry("1024x768")
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_icon.ico")
         self.iconbitmap(icon_path)  # Set the icon here
 
         self.attributes("-topmost", True)  # Set the window to always be on top
@@ -33,19 +109,13 @@ class ImageCyclerApp(ctk.CTk):
         self.image_origin = (0, 0)
         self.drag_start = None
         self.current_image = None
-
-        self.stop_event = threading.Event()  # Event to signal stopping of the thread
-
+        
         # Create and place widgets in a grid layout
         self.grid_columnconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
         self.grid_columnconfigure(2, weight=1)
         self.grid_columnconfigure(3, weight=1)
-        self.grid_columnconfigure(4, weight=1)
-        self.grid_columnconfigure(5, weight=1)
-        self.grid_columnconfigure(6, weight=1)
-        self.grid_columnconfigure(7, weight=1)
-
+        
         self.folder_button = ctk.CTkButton(self, text="Select Folder", command=self.select_folder)
         self.folder_button.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
 
@@ -72,12 +142,9 @@ class ImageCyclerApp(ctk.CTk):
 
         self.save_button = ctk.CTkButton(self, text="Save", command=self.save_settings)
         self.save_button.grid(row=0, column=5, padx=20, pady=20, sticky="ew")
-
-        self.cycle_switch = ctk.CTkSwitch(self, text="Cycle", command=self.toggle_cycling)
-        self.cycle_switch.grid(row=1, column=3, padx=20, pady=20, sticky="ew")
         
         self.canvas = ctk.CTkCanvas(self, background="black")
-        self.canvas.grid(row=2, column=0, columnspan=8, padx=20, pady=20, sticky="nsew")
+        self.canvas.grid(row=2, column=0, columnspan=6, padx=20, pady=20, sticky="nsew")
         self.rowconfigure(2, weight=1)  # Make the canvas row stretch with window resize
 
         self.bind("<Left>", self.show_previous_image)
@@ -88,22 +155,50 @@ class ImageCyclerApp(ctk.CTk):
         self.canvas.bind("<B1-Motion>", self.drag_image)
         self.canvas.bind("<ButtonRelease-1>", self.stop_drag)
 
-        # Bind Enter key to save settings
-        self.bind("<Return>", lambda event: self.save_settings())
-
+        # Bind the Enter key to the save_settings method
+        self.bind('<Return>', lambda event: self.save_settings())
+        
         # Start the image cycling in a separate thread
         self.cycling_thread = threading.Thread(target=self.cycle_images, daemon=True)
         self.cycling_thread.start()
 
-    def toggle_cycling(self):
-        if self.cycle_switch.get() == 1:  # Switch is ON
-            self.stop_event.clear()
-            self.cycling_thread = threading.Thread(target=self.cycle_images, daemon=True)
-            self.cycling_thread.start()
-            self.cycle_switch.configure(text="Stop")
-        else:  # Switch is OFF
-            self.stop_event.set()
-            self.cycle_switch.configure(text="Cycle")
+        self.stop_event = threading.Event()  # Event to signal stopping of the thread
+
+        self.stop_button = ctk.CTkButton(self, text="Stop", command=self.stop_cycling)
+        self.stop_button.grid(row=0, column=6, padx=20, pady=20, sticky="ew")
+
+        self.screenshot_button = ctk.CTkButton(self, text="Screenshot", command=self.take_screenshot)
+        self.screenshot_button.grid(row=0, column=7, padx=20, pady=20, sticky="ew")
+
+        self.screenshot_interval = 10  # Default screenshot interval in seconds
+        self.screenshot_thread = threading.Thread(target=self.auto_screenshot, daemon=True)
+        self.screenshot_thread.start()
+
+    def take_screenshot(self):
+        screenshot = pyautogui.screenshot()
+        screenshot.save("screenshot.png")
+
+    def auto_screenshot(self):
+        while not self.stop_event.is_set():
+            self.take_screenshot()
+            time.sleep(self.screenshot_interval)
+
+    def generate_critique(self):
+        screenshot = pyautogui.screenshot()
+        screenshot.save("screenshot.png")
+        with open("screenshot.png", "rb") as img_file:
+            image_data = img_file.read()
+        response = openai.Image.create(image_data=image_data)
+        critique = response.choices[0].text
+        print(critique)
+
+    def record_critique(self):
+        self.tts_engine.say(self.critique_text)
+        self.tts_engine.runAndWait()
+    
+    def play_critique(self):
+        # play the audio
+        pass
 
     def stop_cycling(self):
         self.stop_event.set()
@@ -257,10 +352,6 @@ class ImageCyclerApp(ctk.CTk):
         tk_img = ImageTk.PhotoImage(display_img)
         self.canvas.create_image(0, 0, anchor="nw", image=tk_img)
         self.canvas.image = tk_img
-
-    def focus_app(self):
-        self.lift()
-        self.focus_force()
 
 if __name__ == "__main__":
     app = ImageCyclerApp()

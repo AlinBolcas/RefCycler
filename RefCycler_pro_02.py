@@ -1,24 +1,72 @@
-import os, sys
+import os
 import threading
 import time
-from PIL import Image, ImageTk
+from PIL import Image, ImageGrab
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
+import base64
+import keyboard
+from openai import OpenAI
+from dotenv import load_dotenv
 
 from aux_func import *
+
+# Load the .env file
+load_dotenv()
+
+# Read the API key from the environment variable
+api_key = os.getenv("OPENAI_API_KEY")
+
+client = OpenAI(api_key=api_key)
+
+system_message = """
+ROLE: You are a world-class art director, visual critic, and designer.
+"""
+user_message = """
+TASK: Your job is to provide constructive and actionable feedback on artwork. Focus on relevant aspects of the artwork and provide clear, concise critique. Use examples to illustrate your suggestions.
+INSTRUCTIONS: Use bullet points and follow this structure:
+
+Initial Remark: What it sees and a positive overall remark.
+Full Feedback: A list of 3-5 bullet points of the most important elements to fix about the image to improve it.
+Final Closing Thoughts: Visual interpretation of where it thinks the artwork should go.
+EXAMPLES:
+
+Example 1: Modelling/Sculpting
+
+Initial Remark: The overall anatomy of the sculpture is well-defined, showcasing a deep understanding of human musculature.
+Full Feedback:
+The fingers on the right hand appear stiff and lack the natural curvature seen in relaxed hands.
+The proportions of the head are slightly off, making it appear too large for the body.
+The muscle definition on the left leg could be more pronounced to match the right leg.
+Final Closing Thoughts: The sculpture exudes a sense of strength and vitality, capturing the dynamic tension of the human form. Enhancing the proportions and natural poses will elevate its realism.
+Example 2: Texturing/Look Development/Shading
+
+Initial Remark: The skin texture on the model is impressively realistic, with fine details that enhance the overall believability.
+Full Feedback:
+The transition between different materials, such as skin and fabric, is not smooth and breaks the visual continuity.
+The metallic surfaces lack the appropriate reflectivity, making them appear dull and lifeless.
+The fabric texture could use more variation to avoid a uniform look.
+Final Closing Thoughts: The texturing adds a layer of depth and realism, bringing the character to life in a visually engaging way. Smoother transitions and better material properties will enhance the overall impact.
+Example 3: Lighting/Compositing/Final Artwork Critique
+
+Initial Remark: The lighting effectively highlights the main features of the scene, creating a dramatic and engaging visual.
+Full Feedback:
+There are noticeable inconsistencies in the shadow directions, which disrupt the overall cohesion of the scene.
+The background appears flat and lacks depth, making the scene feel less immersive.
+The main character's face could use a bit more light to bring out the details.
+Final Closing Thoughts: The lighting sets a compelling mood, drawing attention to the focal points and enhancing the narrative of the scene. Consistent shadows and a more dynamic background will greatly improve the immersion.
+
+---
+Provide feedback on the image below.
+"""
 
 class ImageCyclerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
         self.title("Image Cycler")
-        self.geometry("1174x768")  # Increased width by 150 pixels#
-        
-        if hasattr(sys, '_MEIPASS'):
-            icon_path = os.path.join(sys._MEIPASS, 'app_icon.ico')
-        else:
-            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app_icon.ico')
-
+        self.geometry("1174x768")  # Increased width by 150 pixels
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_icon.ico")
         self.iconbitmap(icon_path)  # Set the icon here
 
         self.attributes("-topmost", True)  # Set the window to always be on top
@@ -33,6 +81,7 @@ class ImageCyclerApp(ctk.CTk):
         self.image_origin = (0, 0)
         self.drag_start = None
         self.current_image = None
+        self.region_selected = False
 
         self.stop_event = threading.Event()  # Event to signal stopping of the thread
 
@@ -75,7 +124,7 @@ class ImageCyclerApp(ctk.CTk):
 
         self.cycle_switch = ctk.CTkSwitch(self, text="Cycle", command=self.toggle_cycling)
         self.cycle_switch.grid(row=1, column=3, padx=20, pady=20, sticky="ew")
-        
+
         self.canvas = ctk.CTkCanvas(self, background="black")
         self.canvas.grid(row=2, column=0, columnspan=8, padx=20, pady=20, sticky="nsew")
         self.rowconfigure(2, weight=1)  # Make the canvas row stretch with window resize
@@ -91,9 +140,8 @@ class ImageCyclerApp(ctk.CTk):
         # Bind Enter key to save settings
         self.bind("<Return>", lambda event: self.save_settings())
 
-        # Start the image cycling in a separate thread
-        self.cycling_thread = threading.Thread(target=self.cycle_images, daemon=True)
-        self.cycling_thread.start()
+        # Set up hotkey for screenshot
+        keyboard.add_hotkey('ctrl+shift+a', self.initiate_screenshot)
 
     def toggle_cycling(self):
         if self.cycle_switch.get() == 1:  # Switch is ON
@@ -158,7 +206,7 @@ class ImageCyclerApp(ctk.CTk):
     def update_image(self):
         if not self.image_list:
             return
-        
+
         # Select the batch of images for the current mood board
         start_index = self.current_image_index
         end_index = start_index + self.images_per_board
@@ -175,7 +223,7 @@ class ImageCyclerApp(ctk.CTk):
         opened_images = load_images(images)
 
         # Define the bin dimensions (you can adjust these values)
-        bin_width = 4096    
+        bin_width = 4096
         bin_height = 4096
 
         # Apply bin packing
@@ -183,7 +231,7 @@ class ImageCyclerApp(ctk.CTk):
 
         # Create packed image from bins
         packed_images = create_packed_image(bins)
-        
+
         # Assuming one packed image for simplicity
         return packed_images[0] if packed_images else Image.new('RGBA', (bin_width, bin_height), (255, 255, 255, 0))
 
@@ -197,14 +245,14 @@ class ImageCyclerApp(ctk.CTk):
     def show_previous_image(self, event):
         if not self.image_list:
             return
-        
+
         self.current_image_index = (self.current_image_index - self.images_per_board) % len(self.image_list)
         self.update_image()
 
     def show_next_image(self, event):
         if not self.image_list:
             return
-        
+
         self.current_image_index = (self.current_image_index + self.images_per_board) % len(self.image_list)
         self.update_image()
 
@@ -261,6 +309,96 @@ class ImageCyclerApp(ctk.CTk):
     def focus_app(self):
         self.lift()
         self.focus_force()
+
+    def initiate_screenshot(self):
+        threading.Thread(target=self.open_screen_region_selector).start()
+
+    # def open_screen_region_selector(self):
+    #     self.region_selected = False
+    #     selector = ScreenRegionSelector(self)
+    #     selector.mainloop()  # Properly open the region selector window
+    #     if self.region_selected:
+    #         selected_region = selector.selected_region
+    #         if selected_region:
+    #             screenshot_path = selector.capture_and_save(*selected_region)
+    #             self.capture_and_critique_screenshot(screenshot_path)
+    #     else:
+    #         print("Region was not selected.")
+
+    def open_screen_region_selector(self):
+        self.region_selected = False
+        selector = ScreenRegionSelector(self)
+        selector.mainloop()  # Properly open the region selector window
+        if selector.selected_region:
+            screenshot_path = selector.capture_and_save(*selector.selected_region)
+            threading.Thread(target=self.capture_and_critique_screenshot, args=(screenshot_path,)).start()
+        else:
+            print("Region was not selected.")
+
+    def capture_and_critique_screenshot(self, screenshot_path):
+        def task():
+            critique = self.get_artistic_critique(screenshot_path)
+            self.after(0, self.display_critique_window, critique)
+
+        threading.Thread(target=task).start()
+
+
+    # def capture_and_critique_screenshot(self, screenshot_path):
+    #     critique = self.get_artistic_critique(screenshot_path)
+    #     self.after(0, self.display_critique_window, critique)
+
+    def get_artistic_critique(self, screenshot_path):
+        try:
+            print("Capturing a screenshot...")
+            base64_image = encode_image(screenshot_path)
+            print("Screenshot encoded to base64.")
+
+            messages = [
+                {"role": "system", "content": system_message},
+                {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_message},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}", "detail": "low"}}
+                ]
+                }]
+
+            total_length = sum(len(str(message['content'])) for message in messages)
+            print(f"Total message length: {total_length} characters")
+
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=messages,
+                max_tokens=250
+            )
+
+            if response and response.choices and len(response.choices) > 0:
+                critique = response.choices[0].message.content
+                print("Critique received from OpenAI API:")
+                print(critique)
+                return critique
+            else:
+                print("No critique generated.")
+                return "No critique could be generated."
+        except Exception as e:
+            print(f"Error getting artistic critique: {e}")
+            return f"Error: {e}"
+
+    def display_critique_window(self, critique):
+        critique_window = ctk.CTkToplevel(self)
+        critique_window.title("Artistic Critique")
+        critique_window.geometry("800x600")
+
+        critique_label = ctk.CTkLabel(critique_window, text="Artistic Critique:", anchor="w")
+        critique_label.pack(padx=10, pady=10, fill="x")
+
+        critique_text = ctk.CTkTextbox(critique_window, wrap="word", height=25, width=780)
+        critique_text.pack(padx=10, pady=10, fill="both", expand=True)
+
+        critique_text.insert("1.0", critique)
+        critique_text.configure(state="disabled")
+
+
 
 if __name__ == "__main__":
     app = ImageCyclerApp()
