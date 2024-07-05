@@ -62,41 +62,64 @@ def process_frames(input_folder, comment):
     
     # Create cover image
     cover_font_size = 75
-    cover_image = Image.open("dailies_cover_logo_01.png")
+    cover_image = Image.open("dailies_cover_logo_04.png")
     x_start = 500  # Starting x position (middle of the frame)
-    y_start = 1000  # Starting y position
-    y_offset = 200  # Space between each line
+    y_start = 900  # Starting y position
+    y_offset = 180  # Space between each line
 
-    cover_image = add_text_to_image(cover_image, f": {project}", (1550, 420), font_size=150, color="white")  # Project
+    cover_image = add_text_to_image(cover_image, f"{project}", (x_start, y_start - 2 * y_offset - 30), font_size=150, color="white")  # Project
     cover_image = add_text_to_image(cover_image, f"Asset: {subject}", (x_start, y_start), font_size=cover_font_size, color="white")  # Asset
     cover_image = add_text_to_image(cover_image, f"Task: {task}", (x_start, y_start + y_offset), font_size=cover_font_size, color="white")  # Task
     cover_image = add_text_to_image(cover_image, f"Date: {date_str}", (x_start, y_start + 2 * y_offset), font_size=cover_font_size, color="white")  # Date
     cover_image = add_text_to_image(cover_image, f"Frame: 1-{len(frames)}", (x_start, y_start + 3 * y_offset), font_size=cover_font_size, color="white")  # Frame range
     cover_image = add_text_to_image(cover_image, f"Note: {comment}", (x_start, y_start + 4 * y_offset), font_size=cover_font_size, color="white")  # Comment
+
+    # Load selected frame
+    selected_frame_path = frame_path.get()
+    if selected_frame_path:
+        selected_frame = Image.open(selected_frame_path).convert("RGBA")
+        scale_factor = 0.52
+        selected_frame.thumbnail((selected_frame.width * scale_factor, selected_frame.height * scale_factor))  # Resize selected frame
+
+        # Calculate the center of the selected frame
+        selected_image_center_x = selected_frame.width // 2
+        selected_image_center_y = selected_frame.height // 2
+
+        # Define the target position where you want the center of the selected frame to be
+        target_x = cover_image.width - 1100  # Adjust as needed
+        target_y = cover_image.height - 1100  # Adjust as needed
+
+        # Calculate the paste position so that the center of the selected frame is at (target_x, target_y)
+        paste_position_x = target_x - selected_image_center_x
+        paste_position_y = target_y - selected_image_center_y
+
+        # Ensure mask is in the correct mode
+        cover_image.paste(selected_frame, (paste_position_x, paste_position_y), selected_frame.split()[3])  # Add to cover
+
     cover_image.save(os.path.join(input_folder, "cover_image_with_text.png"))
 
     # Process each frame
-    for i, frame_path in enumerate(frames):
+    for i, f_path in enumerate(frames):
         frame_number = i + 1
-        frame_image = Image.open(frame_path)
+        frame_image = Image.open(f_path)
         
         # Scale frame to match cover image aspect ratio
         frame_image = scale_and_centralize(frame_image, cover_image.size)
-        annotated_frame_path = os.path.join(input_folder, f"annotated_{frame_number:04d}.png")
+        annotated_f_path = os.path.join(input_folder, f"annotated_{frame_number:04d}.png")
         frame_image = add_text_to_image(frame_image, f"Arvolve: {project}", (50, 30), color="white")  # Top left
         frame_image = add_text_to_image(frame_image, f"{subject}_{task}_{version}", (frame_image.width / 2 - 250, 30), color="white")  # Top left
         frame_image = add_text_to_image(frame_image, f"{date_str}", (frame_image.width - 300, 30), color="white")  # Top right
         
         # Add before/after annotation if present
-        frame_name = os.path.basename(frame_path)
+        frame_name = os.path.basename(f_path)
         before_after_match = re.search(r'_(before|after)_', frame_name)
         if before_after_match:
             before_after_text = before_after_match.group(1)
             frame_image = add_text_to_image(frame_image, before_after_text, (frame_image.width / 2 - 100, frame_image.height - 100), color="white")  # Bottom middle
         
         frame_image = add_text_to_image(frame_image, f"{frame_number} ({1}-{len(frames)})", (frame_image.width - 200, frame_image.height - 100), color="white")  # Bottom right
-        frame_image.save(annotated_frame_path)
-        new_frames.append(annotated_frame_path)
+        frame_image.save(annotated_f_path)
+        new_frames.append(annotated_f_path)
 
     return new_frames, subject, task, version
 
@@ -153,11 +176,17 @@ def select_folder():
     folder_selected = filedialog.askdirectory()
     folder_path.set(folder_selected)
 
+def select_frame():
+    frame_selected = filedialog.askopenfilename(filetypes=[("Image files", "*.png;*.jpg")])
+    frame_path.set(frame_selected)
+
 def generate_video():
     input_folder = folder_path.get()
     comment = comment_entry.get()
     project = project_entry.get()  # Get the project name from the entry field
-    if input_folder and comment:
+    selected_frame_path = frame_path.get()  # Get the selected frame path from the entry field
+
+    if input_folder and comment and selected_frame_path:
         try:
             frames, subject, task, version = process_frames(input_folder, comment)
             output_filename = f"{subject}_{task}_{version}.mov"
@@ -178,20 +207,25 @@ root = ctk.CTk()
 root.title("Dailies Video Generator")
 
 folder_path = ctk.StringVar()
+frame_path = ctk.StringVar()
 
 ctk.CTkLabel(root, text="Select Frames Folder").pack()
 ctk.CTkButton(root, text="Browse", command=select_folder).pack()
 ctk.CTkEntry(root, textvariable=folder_path).pack()
 
-ctk.CTkLabel(root, text="Enter Project Name").pack()
+ctk.CTkLabel(root, text="Select Frame for Cover").pack()
+ctk.CTkButton(root, text="Browse", command=select_frame).pack()
+ctk.CTkEntry(root, textvariable=frame_path).pack()
+
+ctk.CTkLabel(root, text="Enter Show Name:").pack()
 project_entry = ctk.CTkEntry(root, width=300)
 project_entry.pack()
 
-ctk.CTkLabel(root, text="Enter Note for Cover Image").pack()
+ctk.CTkLabel(root, text="Enter Comment:").pack()
 comment_entry = ctk.CTkEntry(root, width=300)
 comment_entry.pack()
 
-ctk.CTkButton(root, text="Generate Video", command=generate_video).pack()
+ctk.CTkButton(root, text="Generate Daily", command=generate_video).pack()
 result_label = ctk.CTkLabel(root, text="")
 result_label.pack()
 
